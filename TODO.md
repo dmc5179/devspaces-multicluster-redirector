@@ -32,8 +32,10 @@ clusters — that is separate work, tracked in §17 below.
 | 13 | Validate renders with `kubectl kustomize` and server-side dry run | done |
 | 14 | Update `README.md` and `CLAUDE.md` for the new layout | done |
 | 15 | Commit on branch | done |
-| 16 | Add `quarkus-smallrye-health` for real readiness probes | todo (follow-up) |
-| 17 | RHACM `Policy` to deploy Dev Spaces to spoke clusters | todo (separate effort) |
+| 16 | Add `quarkus-smallrye-health` for real readiness probes | done |
+| 17 | RHACM `Policy` to deploy Dev Spaces to spoke clusters | done |
+| 18 | Validate the RHACM policy against a real hub | todo |
+| 19 | Decide how `group-mapping.json` stays in sync as spokes are added | todo (design) |
 
 ## Detail
 
@@ -106,12 +108,68 @@ bootstrap and the extra controller RBAC needed by non-default Argo CD instances.
 `README.md` and `CLAUDE.md` both document the old flat layout and the old
 `kubectl apply -k openshift` command.
 
-### 16. Add `quarkus-smallrye-health` (follow-up)
-Adds `/q/health/live` and `/q/health/ready` so the probes in §8 assert something
-meaningful. Application change, so kept out of this deployment-focused branch.
+### 16. Add `quarkus-smallrye-health`
+Adds `/q/health/live` and `/q/health/ready` so the probes in §8 assert something.
 
-### 17. RHACM `Policy` for Dev Spaces on spokes (separate effort)
-Wrap the `Subscription` + `CheCluster` from the Dev Spaces install docs in a
-`Policy`, bound with `Placement` + `PlacementBinding` (note: `PlacementRule` is
-deprecated). Use the RHACM Policy Generator rather than hand-writing
-`object-templates`.
+Two readiness checks, each backed by a new method that **propagates** failure:
+`GroupMappingService.verifyMappingReadable()` and
+`OpenShiftGroupService.verifyGroupsApiAccessible()`. The existing public methods
+swallow exceptions and return empty collections, so they cannot tell "dependency
+down" from "nothing configured" — useless as a health signal. The new methods sit
+alongside them; no existing behaviour changed.
+
+`verifyGroupsApiAccessible()` uses `limit=1` so probe cost does not scale with the
+number of groups on the cluster.
+
+Probe design:
+- **Readiness** gates on both dependencies. `timeoutSeconds: 5` (the Kubernetes
+  default of 1s is too tight for an API round-trip) and `failureThreshold: 3`.
+- **Liveness** checks nothing external. Restarting cannot fix an unreachable API,
+  and restarting on one turns a dependency outage into a CrashLoopBackOff.
+
+Tradeoff to revisit: readiness depends on an external API, so with `replicas: 1`
+an API outage is a user-visible 503 rather than a degraded page. Intentional — the
+app has no useful behaviour without group data — but drop `@Readiness` from
+`OpenShiftApiHealthCheck` to make it observational only.
+
+**Bounded the Fabric8 retry backoff while doing this.** `HealthCheckTest` initially
+took 39s, which traced to Fabric8 retrying a failed request 10 times with backoff
+by default — roughly 20s per call against an unreachable API. That is a production
+problem, not just a slow test: the readiness probe runs every 10s with a 5s
+timeout, so the kubelet would abandon each call while the server thread kept
+retrying, accumulating threads during exactly the outage the probe detects. A user
+request would hang the same 20s before silently falling through to an empty
+mapping. `OpenShiftGroupService` now sets `requestRetryBackoffLimit` to 2.
+
+Tests additionally pin the Fabric8 timeouts and disable retries via surefire system
+properties, since no cluster exists under test. 39.06s → 0.87s.
+
+### 17. RHACM `Policy` for Dev Spaces on spokes
+`rhacm/policy-devspaces.yaml` — one `Policy` with two templates, plus `Placement`
+and `PlacementBinding`. Wraps the Namespace + Subscription + CheCluster manifests
+from the Dev Spaces GitOps install docs. Targets clusters labelled `devspaces=true`.
+
+Hand-written rather than generated: for a single policy it is the clearest and most
+reviewable form, and the Policy Generator plugin was not available here to verify
+its output. Switch to the generator once there are several policies — see
+`rhacm/README.md`.
+
+Two non-obvious details, both documented inline:
+- The CheCluster template declares `extraDependencies` on the operator template
+  with `ignorePending: true`, because the `org.eclipse.che/v2` CRD does not exist
+  until OLM finishes installing the operator.
+- `complianceType: musthave`, not `mustonlyhave` — the operator writes defaults
+  into the CheCluster spec, and `mustonlyhave` would flap forever against it.
+
+Ships `remediationAction: inform`; switch to `enforce` after reviewing.
+
+### 18. Validate the RHACM policy against a real hub
+Structural validation only so far. Not yet checked: the
+`policy.open-cluster-management.io` and `org.eclipse.che/v2` CRD schemas, and an
+actual install on a spoke.
+
+### 19. Group mapping sync (design)
+Adding a spoke still means hand-editing `group-mapping.json` in the host cluster's
+overlay. Deriving it from `ManagedCluster` state is appealing but may not be
+possible: the group→cluster assignment encodes a people decision, not an
+infrastructure fact. Design before building.

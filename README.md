@@ -217,6 +217,12 @@ Preview the rendered output before applying:
 kubectl kustomize openshift/overlays/example-host-cluster
 ```
 
+### Deploying Dev Spaces to the spoke clusters
+
+The redirector is a singleton on one host cluster; the Dev Spaces instances it
+routes to live on the spokes. See [`rhacm/README.md`](rhacm/README.md) for the
+RHACM `Policy` that installs Dev Spaces on every cluster labelled `devspaces=true`.
+
 ### Deploying with Argo CD / OpenShift GitOps
 
 See [`argocd/README.md`](argocd/README.md) for the full guide, including the
@@ -328,6 +334,18 @@ Tests include:
 - `GreetingResourceTest`: Basic endpoint testing
 - `NotFoundRedirectFilterTest`: 404 redirect functionality
 - `GroupMappingServiceTest`: Multi-group AND matching logic (single-group, multi-group, partial match, whitespace handling)
+- `HealthCheckTest`: Health endpoint wiring and reachability
+
+## 🩺 Health Endpoints
+
+- `GET /q/health/live` — process liveness, no dependency checks
+- `GET /q/health/ready` — readiness: group-mapping ConfigMap readable **and**
+  OpenShift groups API reachable with list permission
+
+Readiness intentionally gates on the OpenShift API: the app has no useful behaviour
+without group data. With `replicas: 1` that makes an API outage a user-visible 503
+rather than a degraded page. To make the check observational only, drop the
+`@Readiness` annotation from `OpenShiftApiHealthCheck`.
 
 ## 📊 Monitoring and Troubleshooting
 

@@ -121,7 +121,16 @@ openshift/overlays/<cluster>/            # Route host, OAuth redirect URI, image
 argocd/appproject.yaml                   # AppProject (whitelists the cluster-scoped RBAC)
 argocd/application-redirector.yaml       # Argo CD Application
 argocd/README.md                         # GitOps deployment guide
+rhacm/policy-devspaces.yaml              # RHACM Policy: Dev Spaces on the spoke clusters
+rhacm/README.md
 ```
+
+Two deployment surfaces, deliberately different tools:
+
+| Component | Where | How |
+|---|---|---|
+| Redirector | One host cluster | Argo CD (`argocd/`) |
+| Dev Spaces instance | Every spoke cluster | RHACM Policy (`rhacm/`) |
 
 The redirector is a **singleton on one host cluster** — all users must be
 provisioned there because the host cluster's OpenShift groups drive the routing
@@ -216,10 +225,37 @@ The Fabric8 OpenShiftClient auto-discovers configuration:
 - `GET /api/groups` - Lists all OpenShift groups
 - `GET /api/user` - Returns user info from OAuth headers including matched Dev Spaces URLs
 
+## Health Endpoints
+
+Provided by `quarkus-smallrye-health`:
+
+- `GET /q/health/live` - No dependency checks. Restarting cannot fix an unreachable
+  API, and restarting on one would turn a dependency outage into a CrashLoopBackOff.
+- `GET /q/health/ready` - Two checks: `group-mapping-configmap` (file readable and
+  valid JSON) and `openshift-groups-api` (groups API reachable with list permission).
+
+These are backed by `GroupMappingService.verifyMappingReadable()` and
+`OpenShiftGroupService.verifyGroupsApiAccessible()`, which **propagate** failures.
+The other public methods on those services swallow exceptions and return empty
+collections, so they cannot distinguish "dependency down" from "nothing configured"
+and are unusable as health signals. Keep that distinction when adding checks.
+
+`OpenShiftGroupService` sets `requestRetryBackoffLimit` to 2. Fabric8 defaults to 10
+retries with backoff (~20s per failed call), which is far too long for a path probed
+every 10 seconds.
+
 ## Testing Notes
 
 **GreetingResourceTest** - Basic endpoint tests
 **NotFoundRedirectFilterTest** - Validates 404 → redirect behavior
 **GroupMappingServiceTest** - Unit tests for multi-group AND matching logic (no Quarkus context needed; tests `matchesAllGroups` directly)
+**HealthCheckTest** - Liveness is UP without dependencies; readiness registers both checks and is not rewritten by `Redirect404Filter`. It cannot assert UP: no ConfigMap and no cluster exist under test.
+
+Surefire sets `kubernetes.connection.timeout`, `kubernetes.request.timeout`, and
+`kubernetes.request.retry.backoffLimit` so health checks fail fast with no cluster
+present. Without them `HealthCheckTest` takes ~39s instead of ~1s. Fabric8 reads
+these system properties directly — this project builds the client with
+`KubernetesClientBuilder`, not the Quarkus extension, so Quarkus config will not
+apply.
 
 When writing tests for components that use OpenShiftClient, consider mocking the client or using test profiles with mock data.

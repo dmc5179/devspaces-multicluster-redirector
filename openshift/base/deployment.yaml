@@ -19,21 +19,30 @@ spec:
           image: quay.io/redhat-developer/devspaces-multicluster-redirector:latest
           ports:
             - containerPort: 8080
-          # The app has no quarkus-smallrye-health extension, so there is no
-          # /q/health endpoint. These probes assert only that the HTTP listener and
-          # servlet chain are up: Redirect404Filter turns every unmatched path into
-          # a 302, which httpGet also treats as success. See TODO.md section 16.
+          # Readiness asserts the two things the app actually needs: the
+          # group-mapping ConfigMap is readable, and the OpenShift groups API is
+          # reachable with list permission. Both are external, so timeoutSeconds is
+          # raised from the 1s default and failureThreshold absorbs transient
+          # errors — with replicas: 1, flapping readiness is a user-visible outage.
           readinessProbe:
             httpGet:
-              path: /
+              path: /q/health/ready
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Liveness has no dependency checks on purpose: a restart cannot fix an
+          # unreachable API, and restarting on one would turn a dependency outage
+          # into a CrashLoopBackOff.
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /q/health/live
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             requests:
               cpu: 100m
