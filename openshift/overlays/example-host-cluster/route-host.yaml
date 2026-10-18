@@ -1,0 +1,11 @@
+# CHANGE ME (1 of 4): the Route host.
+#
+# Set explicitly rather than letting OpenShift generate one. The ServiceAccount
+# OAuth redirect URI must match this exactly, and a generated host is not known
+# until after the Route is created — which Git cannot resolve.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: devspaces-multicluster-redirector
+spec:
+  host: redirector.apps.hub.example.com

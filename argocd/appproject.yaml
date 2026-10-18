@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: devspaces
+  namespace: openshift-gitops
+spec:
+  description: Dev Spaces multicluster redirector
+
+  sourceRepos:
+    # CHANGE ME: restrict to your fork.
+    - https://github.com/redhat-developer/devspaces-multicluster-redirector
+
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: redirector
+
+  # The redirector ships a ClusterRole and ClusterRoleBinding so the OAuth Proxy
+  # can create TokenReviews/SubjectAccessReviews and the app can read
+  # user.openshift.io groups. Cluster-scoped resources are denied by default in an
+  # AppProject, so they must be allow-listed explicitly.
+  clusterResourceWhitelist:
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    # Needed only if the Application uses syncOptions: CreateNamespace=true.
+    - group: ""
+      kind: Namespace
+
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Service
+    - group: apps
+      kind: Deployment
+    - group: route.openshift.io
+      kind: Route
+
+  # The oauth-proxy session Secret is created out-of-band and must not be managed,
+  # pruned, or self-healed by Argo CD. Omitting Secret from the whitelist above
+  # enforces that.

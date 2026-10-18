@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Cluster-agnostic base. Do not apply this directly — it has no Route host and no
+# OAuth redirect URI annotation, so the OAuth flow will not work. Use an overlay
+# under ../overlays/.
+#
+# The oauth-proxy session Secret is deliberately NOT managed here. Create it
+# out-of-band before syncing; see ../../argocd/README.md.
+
+namespace: redirector
+
+resources:
+  - serviceaccount.yaml
+  - clusterrole.yaml
+  - clusterrolebinding.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - route.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/name: devspaces-multicluster-redirector
+      app.kubernetes.io/part-of: devspaces-multicluster-redirector

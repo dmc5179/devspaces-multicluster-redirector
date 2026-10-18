@@ -45,8 +45,16 @@ mvn package -Dquarkus.container-image.build=true
 
 ### Deploy to OpenShift
 ```bash
-kubectl apply -k openshift
+# Create the oauth-proxy session secret first — it is NOT in Git (see argocd/README.md)
+oc create secret generic devspaces-multicluster-redirector-session-secret \
+  -n redirector --from-literal=session_secret="$(openssl rand -base64 32)"
+
+kubectl apply -k openshift/overlays/example-host-cluster
 ```
+
+Manifests use a Kustomize base + overlay layout. The base is not directly
+applicable — it has no Route host and no OAuth redirect URI. Always apply an
+overlay. For Argo CD, see `argocd/README.md`.
 
 **Container Images:**
 - **Development (Upstream):** `quay.io/redhat-developer/devspaces-multicluster-redirector:latest`
@@ -55,7 +63,8 @@ kubectl apply -k openshift
   - Use specific version tags (e.g., `3.27`) or digest in production
   - Requires authentication: `podman login registry.redhat.io`
 
-To use the production image, update `openshift/deployment.yaml` line 18 or patch:
+To use the production image, set it in the overlay's `images:` field (see
+`openshift/overlays/example-host-cluster/kustomization.yaml`) or patch:
 ```bash
 oc set image deployment/devspaces-multicluster-redirector \
   devspaces-multicluster-redirector=registry.redhat.io/devspaces/multicluster-redirector-rhel9:latest
@@ -63,7 +72,7 @@ oc set image deployment/devspaces-multicluster-redirector \
 
 ### Clean Up OpenShift Resources
 ```bash
-kubectl delete -k openshift
+kubectl delete -k openshift/overlays/example-host-cluster
 ```
 
 ## Architecture Overview
@@ -105,6 +114,30 @@ kubectl delete -k openshift
 
 ### OpenShift Deployment Architecture
 
+**Manifest layout (Kustomize base + overlays):**
+```
+openshift/base/                          # cluster-agnostic; not directly applicable
+openshift/overlays/<cluster>/            # Route host, OAuth redirect URI, image, group mapping
+argocd/appproject.yaml                   # AppProject (whitelists the cluster-scoped RBAC)
+argocd/application-redirector.yaml       # Argo CD Application
+argocd/README.md                         # GitOps deployment guide
+```
+
+The redirector is a **singleton on one host cluster** — all users must be
+provisioned there because the host cluster's OpenShift groups drive the routing
+([Dev Spaces 3.29 docs](https://access.redhat.com/documentation/en-us/red_hat_openshift_dev_spaces/3.29/plan-con_running_at_scale)).
+The ClusterRole/ClusterRoleBinding names are cluster-scoped singletons, so only one
+instance per cluster is possible, which matches that architecture.
+
+Two values must always agree: `Route.spec.host` and the ServiceAccount's
+`serviceaccounts.openshift.io/oauth-redirecturi.primary` annotation. Both live in
+the overlay.
+
+Never put a literal namespace on the ClusterRoleBinding's ServiceAccount subject.
+Kustomize only rewrites a subject namespace that is absent or `default`, so a
+literal value survives the overlay's `namespace:` field and binds to the wrong
+ServiceAccount — while Argo CD still reports Synced and Healthy.
+
 **Two-container Pod:**
 1. **devspaces-multicluster-redirector** (port 8080) - Quarkus application
 2. **oauth-proxy** (port 8443) - OpenShift OAuth Proxy sidecar
@@ -124,6 +157,8 @@ kubectl delete -k openshift
 - Upstream: `http://localhost:8080`
 - Passes user headers to application
 - Session secret from Secret `devspaces-multicluster-redirector-session-secret`
+- That Secret is **not in Git** and is not managed by Argo CD. Create it out-of-band
+  with a random value; pods will not start until it exists. See `argocd/README.md`.
 
 ## Important Implementation Details
 
@@ -167,10 +202,13 @@ The Fabric8 OpenShiftClient auto-discovers configuration:
 - `quarkus.container-image.registry=quay.io` - Container registry
 - `quarkus.container-image.name=redhat-developer/devspaces-multicluster-redirector` - Image name
 
-**openshift/configmap.yaml:**
+**openshift/overlays/\<cluster\>/configmap-group-mapping.yaml:**
 - Edit `group-mapping.json` to add/modify group → URL mappings
 - Keys may be a single group name or a comma-separated list; comma-separated keys require the user to belong to **all** listed groups (AND logic)
 - Changes are auto-detected without pod restart
+- The base ConfigMap (`openshift/base/configmap.yaml`) is intentionally empty — mappings are environment-specific and belong in the overlay
+- Kept as a plain ConfigMap, **not** a `configMapGenerator`: the generator's name hash changes the volume reference and rolls the pod on every edit, defeating the live-reload design
+- Under Argo CD with `selfHeal: true`, Git is the only way to change mappings unless the ConfigMap is added to `ignoreDifferences`
 
 ## REST API Endpoints
 

@@ -15,9 +15,31 @@ spec:
       serviceAccountName: devspaces-multicluster-redirector
       containers:
         - name: devspaces-multicluster-redirector
+          # Overlays pin this via the kustomization `images:` field. Prefer a digest.
           image: quay.io/redhat-developer/devspaces-multicluster-redirector:latest
           ports:
             - containerPort: 8080
+          # The app has no quarkus-smallrye-health extension, so there is no
+          # /q/health endpoint. These probes assert only that the HTTP listener and
+          # servlet chain are up: Redirect404Filter turns every unmatched path into
+          # a 302, which httpGet also treats as success. See TODO.md section 16.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
           volumeMounts:
             - name: group-mapping
               mountPath: /etc/config
@@ -47,6 +69,22 @@ spec:
                 -client-id=system:serviceaccount:${NAMESPACE}:devspaces-multicluster-redirector \
                 -client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token \
                 -cookie-secret-file=/etc/proxy/secrets/session_secret
+          readinessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
           volumeMounts:
             - name: session-secret
               mountPath: /etc/proxy/secrets
