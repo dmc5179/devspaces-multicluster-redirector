@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: devspaces-multicluster-redirector
+  namespace: openshift-gitops
+spec:
+  project: devspaces
+
+  source:
+    # CHANGE ME: your fork.
+    repoURL: https://github.com/redhat-developer/devspaces-multicluster-redirector
+    # CHANGE ME: pin to a tag or commit SHA. Do not track a moving branch —
+    # it makes the deployed state unreproducible.
+    targetRevision: gitops-argocd-restructure
+    # CHANGE ME: your per-cluster overlay.
+    path: openshift/overlays/example-host-cluster
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: redirector
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+  # Uncomment to keep the documented "edit the ConfigMap, no restart" workflow
+  # working. With selfHeal: true and this commented out, Git is the only way to
+  # change group mappings — out-of-band edits are reverted within minutes.
+  # ignoreDifferences:
+  #   - group: ""
+  #     kind: ConfigMap
+  #     name: devspaces-openshift-group-mapping
+  #     jsonPointers:
+  #       - /data

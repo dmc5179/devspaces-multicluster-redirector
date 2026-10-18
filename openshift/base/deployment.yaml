@@ -15,9 +15,40 @@ spec:
       serviceAccountName: devspaces-multicluster-redirector
       containers:
         - name: devspaces-multicluster-redirector
+          # Overlays pin this via the kustomization `images:` field. Prefer a digest.
           image: quay.io/redhat-developer/devspaces-multicluster-redirector:latest
           ports:
             - containerPort: 8080
+          # Readiness asserts the two things the app actually needs: the
+          # group-mapping ConfigMap is readable, and the OpenShift groups API is
+          # reachable with list permission. Both are external, so timeoutSeconds is
+          # raised from the 1s default and failureThreshold absorbs transient
+          # errors — with replicas: 1, flapping readiness is a user-visible outage.
+          readinessProbe:
+            httpGet:
+              path: /q/health/ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Liveness has no dependency checks on purpose: a restart cannot fix an
+          # unreachable API, and restarting on one would turn a dependency outage
+          # into a CrashLoopBackOff.
+          livenessProbe:
+            httpGet:
+              path: /q/health/live
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
           volumeMounts:
             - name: group-mapping
               mountPath: /etc/config
@@ -47,6 +78,22 @@ spec:
                 -client-id=system:serviceaccount:${NAMESPACE}:devspaces-multicluster-redirector \
                 -client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token \
                 -cookie-secret-file=/etc/proxy/secrets/session_secret
+          readinessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
           volumeMounts:
             - name: session-secret
               mountPath: /etc/proxy/secrets

@@ -62,6 +62,11 @@
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-health</artifactId>
+            <version>${quarkus.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
             <artifactId>quarkus-container-image-jib</artifactId>
         </dependency>
         <dependency>
@@ -93,6 +98,22 @@
             <plugin>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${surefire-plugin.version}</version>
+                <configuration>
+                    <systemPropertyVariables>
+                        <!-- The readiness health check calls the OpenShift API. No
+                             cluster exists under test, so without these the Fabric8
+                             client spends its default 10s timeout per call and
+                             HealthCheckTest takes ~40s. Fabric8 reads these system
+                             properties directly; this project builds the client with
+                             KubernetesClientBuilder rather than the Quarkus
+                             extension, so Quarkus config would not apply. -->
+                        <kubernetes.connection.timeout>1000</kubernetes.connection.timeout>
+                        <kubernetes.request.timeout>1000</kubernetes.request.timeout>
+                        <!-- The dominant cost: Fabric8 retries a failed request 10
+                             times with backoff by default. -->
+                        <kubernetes.request.retry.backoffLimit>0</kubernetes.request.retry.backoffLimit>
+                    </systemPropertyVariables>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>io.quarkus</groupId>

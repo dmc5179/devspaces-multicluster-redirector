@@ -76,6 +76,26 @@ public class GroupMappingService {
     }
 
     /**
+     * Reads and parses the mapping file, propagating any failure.
+     *
+     * readGroupMapping() deliberately swallows errors and returns an empty map so a
+     * transient problem degrades to "no matches" rather than a 500. That makes it
+     * useless as a health signal: an unreadable file and a legitimately empty one
+     * look identical. The readiness probe calls this instead.
+     *
+     * @return the number of entries in the mapping
+     * @throws IOException if the file is missing, unreadable, or not valid JSON
+     */
+    int verifyMappingReadable() throws IOException {
+        Path realPath = Paths.get(CONFIG_PATH).toRealPath();
+        byte[] bytes = Files.readAllBytes(realPath);
+        String jsonContent = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        Map<String, String> mapping = objectMapper.readValue(jsonContent,
+            new TypeReference<Map<String, String>>() {});
+        return mapping.size();
+    }
+
+    /**
      * Returns true if the user belongs to all groups listed in the given key.
      * Keys may be comma-separated (e.g. "team-alpha, team-beta"), requiring membership in all named groups.
      * A blank or empty key (e.g. "" or ",") never matches.

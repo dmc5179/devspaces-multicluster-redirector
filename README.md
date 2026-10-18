@@ -157,7 +157,8 @@ oc set image deployment/devspaces-multicluster-redirector \
 
    > **IMPORTANT**: The Service Account **must** be configured with the `serviceaccounts.openshift.io/oauth-redirecturi.primary` annotation. This annotation specifies the OAuth callback URL that the OAuth Proxy will use for authentication. Without this annotation, the OAuth authentication flow will fail.
    >
-   > Example (see [`openshift/serviceaccount.yaml`](openshift/serviceaccount.yaml)):
+   > It must match `Route.spec.host` exactly. Both are set in your overlay — see
+   > [`openshift/overlays/example-host-cluster/`](openshift/overlays/example-host-cluster/):
    > ```yaml
    > apiVersion: v1
    > kind: ServiceAccount
@@ -171,50 +172,90 @@ oc set image deployment/devspaces-multicluster-redirector \
 
 2. **ConfigMap**: Create a ConfigMap with group-to-URL mappings
 3. **OAuth Proxy**: Configured for OpenShift authentication
+4. **Session Secret**: Created out-of-band — it is deliberately not in Git
+
+### Manifest Layout
+
+Manifests use a Kustomize base + overlay layout:
+
+```
+openshift/base/                          # cluster-agnostic; not directly applicable
+openshift/overlays/example-host-cluster/ # per-cluster values — copy this
+argocd/                                  # Argo CD AppProject + Application
+```
+
+The base has no Route host and no OAuth redirect URI, so **always apply an
+overlay**. Copy `openshift/overlays/example-host-cluster/` per host cluster and
+change the four marked values: Route host, OAuth redirect URI, image, and group
+mapping.
 
 ### Deployment Steps
 
-The `openshift/` directory contains Kustomize configuration files:
-
 ```bash
 oc new-project redirector
-kubectl apply -k openshift -n redirector
+
+# The oauth-proxy session secret is NOT in Git. Create it first — pods will not
+# start until it exists.
+oc create secret generic devspaces-multicluster-redirector-session-secret \
+  -n redirector --from-literal=session_secret="$(openssl rand -base64 32)"
+
+kubectl apply -k openshift/overlays/example-host-cluster
 ```
 
 This creates:
 - **ServiceAccount**: `devspaces-multicluster-redirector`
-- **ClusterRole**: Permissions to list and get groups
+- **ClusterRole**: Permissions to list and get groups, and create token/access reviews
 - **ClusterRoleBinding**: Binds the role to the service account
 - **ConfigMap**: Group mapping configuration
-- **Secret**: OAuth proxy session secret
 - **Deployment**: Application with OAuth proxy sidecar
 - **Service**: Internal service on port 8443
 - **Route**: External HTTPS access
 
-#### Using Production Image
-
-For production deployments, modify `openshift/deployment.yaml` to use the Red Hat certified image before applying:
-
-```yaml
-containers:
-  - name: devspaces-multicluster-redirector
-    image: registry.redhat.io/devspaces/multicluster-redirector-rhel9:latest  # Use specific version tag in production
-    ports:
-      - containerPort: 8080
-```
-
-Or patch an existing deployment:
+Preview the rendered output before applying:
 
 ```bash
-oc patch deployment devspaces-multicluster-redirector \
-  -p '{"spec":{"template":{"spec":{"containers":[{"name":"devspaces-multicluster-redirector","image":"registry.redhat.io/devspaces/multicluster-redirector-rhel9:latest"}]}}}}'
+kubectl kustomize openshift/overlays/example-host-cluster
 ```
+
+### Deploying Dev Spaces to the spoke clusters
+
+The redirector is a singleton on one host cluster; the Dev Spaces instances it
+routes to live on the spokes. See [`rhacm/README.md`](rhacm/README.md) for the
+RHACM `Policy` that installs Dev Spaces on every cluster labelled `devspaces=true`.
+
+### Deploying with Argo CD / OpenShift GitOps
+
+See [`argocd/README.md`](argocd/README.md) for the full guide, including the
+session-secret bootstrap and the controller RBAC needed by non-default Argo CD
+instances.
+
+```bash
+oc apply -f argocd/appproject.yaml
+oc apply -f argocd/application-redirector.yaml
+```
+
+#### Using Production Image
+
+The overlay pins the image via the Kustomize `images:` field in
+`openshift/overlays/example-host-cluster/kustomization.yaml`:
+
+```yaml
+images:
+  - name: quay.io/redhat-developer/devspaces-multicluster-redirector
+    newName: registry.redhat.io/devspaces/multicluster-redirector-rhel9
+    newTag: "3.27"   # pin by digest in production
+```
+
+Avoid `:latest` — it makes the deployed state unreproducible, and Argo CD will
+report Synced while the running image drifts.
 
 ### Configuration
 
 #### Group Mapping ConfigMap
 
-Edit `openshift/configmap.yaml` to configure your group mappings:
+Edit `openshift/overlays/<your-cluster>/configmap-group-mapping.yaml` to configure
+your group mappings (the base ConfigMap is intentionally empty — mappings are
+environment-specific):
 
 ```yaml
 apiVersion: v1
@@ -241,9 +282,18 @@ Keys are matched using **AND logic**: a comma-separated key like `"team-alpha, t
 
 **Note**: ConfigMap updates are automatically detected by the application without restart.
 
+**Under Argo CD**: with `selfHeal: true`, Git is the only way to change mappings —
+an out-of-band `oc edit` is reverted within minutes. Live reload still works (no pod
+restart), the change just has to arrive through Git. To keep ad-hoc edits working,
+uncomment the `ignoreDifferences` block in `argocd/application-redirector.yaml`.
+
+The ConfigMap is a plain resource rather than a `configMapGenerator` on purpose:
+the generator appends a content hash to the name, which changes the volume
+reference and rolls the pod on every edit, defeating the live-reload design.
+
 #### RBAC Permissions
 
-The service account needs these permissions (defined in `openshift/clusterrole.yaml`):
+The service account needs these permissions (defined in `openshift/base/clusterrole.yaml`):
 
 ```yaml
 rules:
@@ -284,6 +334,18 @@ Tests include:
 - `GreetingResourceTest`: Basic endpoint testing
 - `NotFoundRedirectFilterTest`: 404 redirect functionality
 - `GroupMappingServiceTest`: Multi-group AND matching logic (single-group, multi-group, partial match, whitespace handling)
+- `HealthCheckTest`: Health endpoint wiring and reachability
+
+## 🩺 Health Endpoints
+
+- `GET /q/health/live` — process liveness, no dependency checks
+- `GET /q/health/ready` — readiness: group-mapping ConfigMap readable **and**
+  OpenShift groups API reachable with list permission
+
+Readiness intentionally gates on the OpenShift API: the app has no useful behaviour
+without group data. With `replicas: 1` that makes an API outage a user-visible 503
+rather than a degraded page. To make the check observational only, drop the
+`@Readiness` annotation from `OpenShiftApiHealthCheck`.
 
 ## 📊 Monitoring and Troubleshooting
 

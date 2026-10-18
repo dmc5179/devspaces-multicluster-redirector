@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Example overlay. Copy this directory per host cluster and change the four
+# marked values. See README.md in this directory.
+
+# Rewrites metadata.namespace on every namespaced resource AND the ServiceAccount
+# subject namespace inside the ClusterRoleBinding, which is what makes the base
+# namespace-portable.
+namespace: redirector
+
+resources:
+  - ../../base
+
+patches:
+  - path: route-host.yaml
+  - path: serviceaccount-oauth.yaml
+  - path: configmap-group-mapping.yaml
+
+images:
+  # CHANGE ME (3 of 4): pin the application image.
+  # 3.27 is an example tag — pin by digest in production, e.g.
+  #   digest: sha256:<digest>
+  - name: quay.io/redhat-developer/devspaces-multicluster-redirector
+    newName: registry.redhat.io/devspaces/multicluster-redirector-rhel9
+    newTag: "3.27"

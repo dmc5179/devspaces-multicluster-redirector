@@ -1,0 +1,19 @@
+# CHANGE ME (4 of 4): the group -> Dev Spaces URL mapping for this host cluster.
+#
+# Keys use AND logic: a comma-separated key requires membership in all listed
+# groups. A user matching several keys is offered all matching instances.
+#
+# The groups named here must exist on THIS cluster — the host cluster's OpenShift
+# groups drive the routing, and all users must be provisioned here even if they
+# only ever run workloads on a spoke.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: devspaces-openshift-group-mapping
+data:
+  group-mapping.json: |
+    {
+      "team-alpha, team-beta": "https://devspaces.apps.cluster1.example.com",
+      "team-alpha":            "https://devspaces.apps.cluster2.example.com",
+      "contractors":           "https://devspaces.apps.external.example.com"
+    }

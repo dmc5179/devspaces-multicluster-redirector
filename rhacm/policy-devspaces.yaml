@@ -1,0 +1,147 @@
+# Installs Red Hat OpenShift Dev Spaces on every managed cluster labelled
+# devspaces=true.
+#
+# The wrapped manifests (Namespace + Subscription, then CheCluster) are the ones
+# Red Hat documents for a GitOps install:
+# https://access.redhat.com/documentation/en-us/red_hat_openshift_dev_spaces/3.30/install-proc_deploying_devspaces_using_gitops
+#
+# This is the spoke-side half of the multicluster setup. The redirector itself is
+# NOT deployed here — it is a singleton on the host cluster, installed with Argo CD.
+# See ../argocd/README.md.
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: devspaces-install
+  namespace: policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+    policy.open-cluster-management.io/description: >-
+      Installs the OpenShift Dev Spaces Operator and creates a CheCluster instance
+      on managed clusters labelled devspaces=true.
+spec:
+  disabled: false
+  # CHANGE ME: start with "inform" to see what would change on each spoke, then
+  # switch to "enforce" once the report looks right.
+  remediationAction: inform
+
+  policy-templates:
+    # ---------------------------------------------------------------------------
+    # 1. Operator: target namespace + Subscription.
+    #
+    # The Subscription goes in openshift-operators, which already carries a global
+    # OperatorGroup on OpenShift, so none is created here.
+    # ---------------------------------------------------------------------------
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: devspaces-operator
+        spec:
+          severity: high
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: openshift-devspaces
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: operators.coreos.com/v1alpha1
+                kind: Subscription
+                metadata:
+                  name: devspaces
+                  namespace: openshift-operators
+                spec:
+                  channel: stable
+                  installPlanApproval: Automatic
+                  name: devspaces
+                  source: redhat-operators
+                  sourceNamespace: openshift-marketplace
+
+    # ---------------------------------------------------------------------------
+    # 2. CheCluster instance.
+    #
+    # Gated on the operator template being Compliant: the org.eclipse.che/v2 CRD
+    # does not exist until OLM has installed the operator, so an ungated template
+    # would churn NonCompliant on every fresh spoke until the install finished.
+    #
+    # ignorePending: true keeps the overall policy from reporting NonCompliant
+    # during that normal install window — Pending counts as Compliant.
+    # ---------------------------------------------------------------------------
+    - extraDependencies:
+        - apiVersion: policy.open-cluster-management.io/v1
+          kind: ConfigurationPolicy
+          name: devspaces-operator
+          compliance: Compliant
+      ignorePending: true
+      objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: devspaces-checluster
+        spec:
+          severity: high
+          object-templates:
+            # musthave, not mustonlyhave: the Dev Spaces operator writes defaults
+            # into the CheCluster spec. mustonlyhave would fight it forever, with
+            # the policy flapping between Compliant and NonCompliant.
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: org.eclipse.che/v2
+                kind: CheCluster
+                metadata:
+                  name: devspaces
+                  namespace: openshift-devspaces
+                spec:
+                  components:
+                    cheServer:
+                      debug: false
+                      logLevel: INFO
+                    metrics:
+                      enable: true
+                    # CHANGE ME: in a restricted network, point this at an
+                    # internal Open VSX mirror or remove it.
+                    pluginRegistry:
+                      openVSXURL: https://open-vsx.org
+
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: placement-devspaces-install
+  namespace: policies
+spec:
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            # CHANGE ME: label the spokes that should run Dev Spaces, e.g.
+            #   oc label managedcluster <name> devspaces=true
+            - key: devspaces
+              operator: In
+              values:
+                - "true"
+  tolerations:
+    - key: cluster.open-cluster-management.io/unavailable
+      operator: Exists
+    - key: cluster.open-cluster-management.io/unreachable
+      operator: Exists
+
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: binding-devspaces-install
+  namespace: policies
+placementRef:
+  name: placement-devspaces-install
+  kind: Placement
+  apiGroup: cluster.open-cluster-management.io
+subjects:
+  - name: devspaces-install
+    kind: Policy
+    apiGroup: policy.open-cluster-management.io
